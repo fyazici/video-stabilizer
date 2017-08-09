@@ -90,9 +90,9 @@ struct StabilizerParams {
     
     StabilizerParams() :
         feature_maxCorners{200}, 
-        feature_qualityLevel{0.1}, 
+        feature_qualityLevel{0.01}, 
         feature_minDistance{30.}, 
-        smooth_windowSize{60}
+        smooth_windowSize{30}
     {}
 };
 
@@ -176,7 +176,7 @@ void obtainDTrajectory(cv::VideoCapture& cap, TransformState& transformState, in
                                 transformState.params.feature_maxCorners, transformState.params.feature_qualityLevel, transformState.params.feature_minDistance);
         
         LOG(INFO) << "Found trackable features: " << previous_points.size();
-        if (previous_points.size() < 10) {
+        if (previous_points.size() < 4) {
             LOG(WARNING) << "Not enough trackable features found. Fallback latest valid transform.";
             transformState.d_trajectory.push_back(transformState.d_trajectory.back());
             continue;
@@ -224,20 +224,12 @@ void smoothDTrajectory(TransformState& transformState) {
     for (size_t i = 1; i < trajectory.size(); ++i) {
         size_t win_beg = std::max<int>(i - transformState.params.smooth_windowSize, 0);
         size_t win_end = std::min<int>(i + transformState.params.smooth_windowSize + 1, trajectory.size()); // exclusive
-        Transrot sum;
+        
+        Transrot acc;
         for (auto k = win_beg; k < win_end; ++k)
-            sum = sum + trajectory[k];
-        sum = sum / double(win_end-win_beg);
-        smooth_trajectory[i] = sum;
-    }
-    
-    Transrot x;
-    
-    for (size_t i = 0; i < smooth_trajectory.size(); ++i) {
-        x = x + transformState.d_trajectory[i];
-        Transrot diffx = smooth_trajectory[i] - x;
-        Transrot dx = transformState.d_trajectory[i] + diffx;
-        d_smooth_trajectory[i] = dx;
+            acc = acc + trajectory[k];
+        acc = acc/(win_end - win_beg) - trajectory[i];
+        d_smooth_trajectory[i] = acc;
     }
     
     if ( /* DISABLES CODE */ ( 0 ) )
