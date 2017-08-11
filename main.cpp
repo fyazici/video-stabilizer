@@ -99,24 +99,56 @@ struct StabilizerParams {
 struct Transrot {
     double tlx, tly, angle;
     
-    Transrot() : tlx(0.), tly(0.), angle(0.) {}
+    explicit Transrot(double value_ = 0.) : tlx(value_), tly(value_), angle(value_) {}
     
     Transrot(double tlx_, double tly_, double angle_) : tlx(tlx_), tly(tly_), angle(angle_) {}
     
     Transrot operator+(const Transrot& other) const {
-        return Transrot{tlx+other.tlx, tly+other.tly, angle+other.angle};
+        return {tlx+other.tlx, tly+other.tly, angle+other.angle};
     }
     
     Transrot operator-(const Transrot& other) const {
-        return Transrot{tlx-other.tlx, tly-other.tly, angle-other.angle};
+        return {tlx-other.tlx, tly-other.tly, angle-other.angle};
     }
     
     Transrot operator*(double k) const {
-        return Transrot{tlx*k, tly*k, angle*k};
+        return {tlx*k, tly*k, angle*k};
     }
     
     Transrot operator/(double k) const {
-        return Transrot{tlx/k, tly/k, angle/k};
+        return {tlx/k, tly/k, angle/k};
+    }
+    
+    Transrot operator-() const {
+        return {-tlx, -tly, -angle};
+    }
+    
+    Transrot& operator+=(const Transrot& rhs) {
+        tlx += rhs.tlx;
+        tly += rhs.tly;
+        angle += rhs.angle;
+        return *this;
+    }
+    
+    Transrot operator-=(const Transrot& rhs) {
+        tlx -= rhs.tlx;
+        tly -= rhs.tly;
+        angle -= rhs.angle;
+        return *this;
+    }
+    
+    Transrot operator*=(double k) {
+        tlx *= k;
+        tly *= k;
+        angle *= k;
+        return *this;
+    }
+    
+    Transrot operator/=(double k) {
+        tlx /= k;
+        tly /= k;
+        angle /= k;
+        return *this;
     }
     
     cv::Mat get_rigid() const {
@@ -216,33 +248,18 @@ void obtainDTrajectory(cv::VideoCapture& cap, TransformState& transformState, in
 
 void smoothDTrajectory(TransformState& transformState) {
     Trajectory trajectory(transformState.d_trajectory.size());
-    Trajectory smooth_trajectory(transformState.d_trajectory.size());
     Trajectory d_smooth_trajectory(transformState.d_trajectory.size());
     
     std::partial_sum(transformState.d_trajectory.begin(), transformState.d_trajectory.end(), trajectory.begin());
     
-    for (size_t i = 1; i < trajectory.size(); ++i) {
+    for (size_t i = 0; i < trajectory.size(); ++i) {
         size_t win_beg = std::max<int>(i - transformState.params.smooth_windowSize, 0);
         size_t win_end = std::min<int>(i + transformState.params.smooth_windowSize + 1, trajectory.size()); // exclusive
         
-        Transrot acc;
-        for (auto k = win_beg; k < win_end; ++k)
-            acc = acc + trajectory[k];
-        acc = acc/(win_end - win_beg) - trajectory[i];
+        Transrot acc = std::accumulate(trajectory.begin() + win_beg, trajectory.begin() + win_end, Transrot{});
+        acc /= (win_end - win_beg);
+        acc -= trajectory[i];
         d_smooth_trajectory[i] = acc;
-    }
-    
-    if ( /* DISABLES CODE */ ( 0 ) )
-    {
-        std::ofstream ofsTrajectory{"trajectory.csv", std::ios::out};
-        for (size_t i = 0; i < trajectory.size(); ++i) {
-            ofsTrajectory 
-                << transformState.d_trajectory[i] << ","
-                << trajectory[i] << ","
-                << smooth_trajectory[i] << ","
-                << d_smooth_trajectory[i] << "\n";
-        }
-        ofsTrajectory.close();
     }
     
     transformState.d_trajectory = d_smooth_trajectory;
@@ -305,12 +322,11 @@ int main(int argc, char **argv) {
         auto start = high_resolution_clock::now();
         do {
             auto elapsed = duration_cast< duration<double, std::ratio<1, 1>> >(high_resolution_clock::now() - start).count();
-            LOG(INFO) << "Processed " << double(100 * ::frameNumber) / frameCount << "%." 
+            std::cout << "Processed " << double(100 * ::frameNumber) / frameCount << "%." 
                 << "ETA: " << (frameCount - ::frameNumber) / (::frameNumber / elapsed) << "s"
                 << std::endl;
             std::this_thread::sleep_for(500ms);
         } while(::frameNumber < frameCount);
-        LOG(INFO) << "\nFinished.\n";
     });
     
     TransformState state;
