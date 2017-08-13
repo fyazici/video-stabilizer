@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.0)
 
 set(CMAKE_C_COMPILER "clang")
 set(CMAKE_CXX_COMPILER "clang++")
@@ -18,6 +18,6 @@ find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options system)
 find_package(glog REQUIRED)
 
-add_executable(cvtest main.cpp)
+add_executable(cvtest src/main.cpp)
 
 target_link_libraries(cvtest m pthread ${OpenCV_LIBS} ${Boost_LIBRARIES} glog::glog)

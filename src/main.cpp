@@ -65,6 +65,9 @@ AppConfiguration parse_program_options(int argc, char **argv) {
 }
 
 // adapted from https://stackoverflow.com/a/21995693/4911614
+/**
+ * @private
+ */
 template<typename TimeT = std::chrono::milliseconds>
 struct measure
 {
@@ -96,77 +99,102 @@ struct StabilizerParams {
     {}
 };
 
-struct Transrot {
-    double tlx, tly, angle;
+/**
+ * @class RigidMotion2D
+ * Represents a (usually delta) rigid motion by rotation and translation.
+ * Transformation order is assumed to be first rotation and then translation.
+ */
+struct RigidMotion2D {
+    double tx; /*!< Translation in the \f$ x \f$ axis */
+    double ty; /*!< Translation in the \f$ y \f$ axis */
+    double angle; /*!< Rotation amount \f$ \theta \f$ */
     
-    explicit Transrot(double value_ = 0.) : tlx(value_), tly(value_), angle(value_) {}
+    RigidMotion2D () : tx(0.), ty(0.), angle(0.) {}
     
-    Transrot(double tlx_, double tly_, double angle_) : tlx(tlx_), tly(tly_), angle(angle_) {}
+    RigidMotion2D (double tx_, double ty_, double angle_) : tx (tx_), ty (ty_), angle(angle_) {}
     
-    Transrot operator+(const Transrot& other) const {
-        return {tlx+other.tlx, tly+other.tly, angle+other.angle};
+    /** 
+     * @brief Initialize a RigidMotion2D from a rigid transformation matrix
+     * 
+     * Transformation matrix must be in the form of a rigid transform:
+     * \f$\begin{bmatrix}
+     * \cos(\theta) & -\sin(\theta) & t_x \\
+     * \sin(\theta) & \cos(\theta) & t_y \end{bmatrix}\f$
+     */
+    RigidMotion2D(cv::Mat_<double> rigid_) {
+        tx = rigid_(0, 2);
+        ty = rigid_(1, 2);
+        angle = std::atan2(rigid_(1, 0), rigid_(0, 0));
     }
     
-    Transrot operator-(const Transrot& other) const {
-        return {tlx-other.tlx, tly-other.tly, angle-other.angle};
+    RigidMotion2D operator+(const RigidMotion2D& other) const {
+        return {tx+other.tx, ty+other.ty, angle+other.angle};
     }
     
-    Transrot operator*(double k) const {
-        return {tlx*k, tly*k, angle*k};
+    RigidMotion2D operator-(const RigidMotion2D& other) const {
+        return {tx-other.tx, ty-other.ty, angle-other.angle};
     }
     
-    Transrot operator/(double k) const {
-        return {tlx/k, tly/k, angle/k};
+    RigidMotion2D operator*(double k) const {
+        return {tx*k, ty*k, angle*k};
     }
     
-    Transrot operator-() const {
-        return {-tlx, -tly, -angle};
+    RigidMotion2D operator/(double k) const {
+        return {tx/k, ty/k, angle/k};
     }
     
-    Transrot& operator+=(const Transrot& rhs) {
-        tlx += rhs.tlx;
-        tly += rhs.tly;
+    RigidMotion2D operator-() const {
+        return {-tx, -ty, -angle};
+    }
+    
+    RigidMotion2D& operator+=(const RigidMotion2D& rhs) {
+        tx += rhs.tx;
+        ty += rhs.ty;
         angle += rhs.angle;
         return *this;
     }
     
-    Transrot operator-=(const Transrot& rhs) {
-        tlx -= rhs.tlx;
-        tly -= rhs.tly;
+    RigidMotion2D& operator-=(const RigidMotion2D& rhs) {
+        tx -= rhs.tx;
+        ty -= rhs.ty;
         angle -= rhs.angle;
         return *this;
     }
     
-    Transrot operator*=(double k) {
-        tlx *= k;
-        tly *= k;
+    RigidMotion2D& operator*=(double k) {
+        tx *= k;
+        ty *= k;
         angle *= k;
         return *this;
     }
     
-    Transrot operator/=(double k) {
-        tlx /= k;
-        tly /= k;
+    RigidMotion2D& operator/=(double k) {
+        tx /= k;
+        ty /= k;
         angle /= k;
         return *this;
     }
     
-    cv::Mat get_rigid() const {
-        cv::Mat rigid(2, 3, CV_64F);
-        rigid.at<double>(0, 0) =  std::cos(angle);
-        rigid.at<double>(0, 1) = -std::sin(angle);
-        rigid.at<double>(1, 0) =  std::sin(angle);
-        rigid.at<double>(1, 1) =  std::cos(angle);
-        rigid.at<double>(0, 2) =           tlx   ;
-        rigid.at<double>(1, 2) =           tly   ;
+    cv::Mat_<double> get_rigid() const {
+        cv::Mat_<double> rigid(2, 3);
+        rigid(0, 0) =  std::cos(angle);
+        rigid(0, 1) = -std::sin(angle);
+        rigid(1, 0) =  std::sin(angle);
+        rigid(1, 1) =  std::cos(angle);
+        rigid(0, 2) =  tx;
+        rigid(1, 2) =  ty;
         return rigid;
     }
 };
 
-using Trajectory = std::vector<Transrot>;
+/**
+ * @class Trajectory
+ * An ordered list of RigidMotion2D pieces. Implemented as a `std::vector<RigidMotion2D>`
+ */
+using Trajectory = std::vector<RigidMotion2D>;
 
-std::ostream& operator<<(std::ostream& os, const Transrot& tr) {
-    os << tr.tlx << "," << tr.tly << "," << tr.angle;
+std::ostream& operator<<(std::ostream& os, const RigidMotion2D& tr) {
+    os << tr.tx << "," << tr.ty << "," << tr.angle;
     return os;
 }
 
@@ -237,12 +265,8 @@ void obtainDTrajectory(cv::VideoCapture& cap, TransformState& transformState, in
             transformState.d_trajectory.push_back(transformState.d_trajectory.back());
             continue;
         }
-        
-        Transrot tr;
-        tr.tlx = rigid.at<double>(0, 2);
-        tr.tly = rigid.at<double>(1, 2);
-        tr.angle = std::atan2(rigid.at<double>(1, 0), rigid.at<double>(0, 0));
-        transformState.d_trajectory.emplace_back(tr);
+
+        transformState.d_trajectory.emplace_back(rigid);
     }
 }
 
@@ -256,13 +280,11 @@ void smoothDTrajectory(TransformState& transformState) {
         size_t win_beg = std::max<int>(i - transformState.params.smooth_windowSize, 0);
         size_t win_end = std::min<int>(i + transformState.params.smooth_windowSize + 1, trajectory.size()); // exclusive
         
-        Transrot acc = std::accumulate(trajectory.begin() + win_beg, trajectory.begin() + win_end, Transrot{});
+        RigidMotion2D acc = std::accumulate(trajectory.begin() + win_beg, trajectory.begin() + win_end, RigidMotion2D {});
         acc /= (win_end - win_beg);
         acc -= trajectory[i];
-        d_smooth_trajectory[i] = acc;
+        transformState.d_trajectory[i] = acc;
     }
-    
-    transformState.d_trajectory = d_smooth_trajectory;
 }
 
 void stabilizeVideo(cv::VideoCapture& src, cv::VideoWriter& dst, TransformState& transformState, int numframes = -1) {
