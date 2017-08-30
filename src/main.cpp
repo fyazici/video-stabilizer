@@ -22,6 +22,7 @@
 
 struct AppConfiguration {
     std::string input_path, output_path, codec;
+    size_t window_size;
     
     int get_codec_index() const {
         if (codec.size() == 4)
@@ -31,7 +32,7 @@ struct AppConfiguration {
     }
 };
 
-AppConfiguration parse_program_options(int argc, char **argv) {
+std::pair<bool, AppConfiguration> parse_program_options(int argc, char **argv) {
     namespace po = boost::program_options;
     
     AppConfiguration cfg;
@@ -40,9 +41,11 @@ AppConfiguration parse_program_options(int argc, char **argv) {
     {
         po::options_description desc{"Options"};
         desc.add_options()
-            ("input-file,i", po::value<std::string>(&cfg.input_path)->required(), "Input filename")
-            ("output-file,o", po::value<std::string>(&cfg.output_path)->required(), "Output filename")
-            ("codec,c", po::value<std::string>(&cfg.codec)->default_value("MP4V"), "Codec fourcc code");
+            ("help,h", "Display this help message")
+            ("input-file,i", po::value<std::string>(&cfg.input_path), "Input filename")
+            ("output-file,o", po::value<std::string>(&cfg.output_path), "Output filename")
+            ("codec,c", po::value<std::string>(&cfg.codec)->default_value("MP4V"), "Codec fourcc code")
+            ("frames,n", po::value<size_t>(&cfg.window_size)->default_value(30), "Smoothing window size for trajectory stabilization");
             
         po::command_line_parser parser{argc, argv};
         parser.options(desc).allow_unregistered().style(
@@ -54,6 +57,14 @@ AppConfiguration parse_program_options(int argc, char **argv) {
         po::store(parsed_options, vm);
         po::notify(vm);
         
+        if (vm.count("help")) {
+            std::cout << desc;
+            return std::make_pair(false, AppConfiguration{});
+        } else if (!vm.count("input-file") || !vm.count("output-file")) {
+            std::cout << "Input and output filenames are required.\n" << desc;
+            return std::make_pair(false, AppConfiguration{});
+        }
+        
     } 
     catch(const po::error &ex) 
     {
@@ -61,7 +72,7 @@ AppConfiguration parse_program_options(int argc, char **argv) {
         exit(-1);
     }
     
-    return cfg;
+    return std::make_pair(true, cfg);
 }
 
 // adapted from https://stackoverflow.com/a/21995693/4911614
@@ -95,7 +106,7 @@ struct StabilizerParams {
         feature_maxCorners{200}, 
         feature_qualityLevel{0.01}, 
         feature_minDistance{30.}, 
-        smooth_windowSize{30}
+        smooth_windowSize{}
     {}
 };
 
@@ -175,7 +186,7 @@ struct RigidMotion2D {
         return *this;
     }
     
-    cv::Mat_<double> get_rigid() const {
+    cv::Mat_<double> rigid() const {
         cv::Mat_<double> rigid(2, 3);
         rigid(0, 0) =  std::cos(angle);
         rigid(0, 1) = -std::sin(angle);
@@ -185,6 +196,15 @@ struct RigidMotion2D {
         rigid(1, 2) =  ty;
         return rigid;
     }
+    
+    double norm() const {
+        return std::sqrt(tx*tx + ty*ty);
+    }
+    
+    friend std::ostream& operator<<(std::ostream& os, const RigidMotion2D& tr) {
+        os << "[" << tr.tx << "," << tr.ty << "," << tr.angle << "]";
+        return os;
+    }
 };
 
 /**
@@ -192,11 +212,6 @@ struct RigidMotion2D {
  * An ordered list of RigidMotion2D pieces. Implemented as a `std::vector<RigidMotion2D>`
  */
 using Trajectory = std::vector<RigidMotion2D>;
-
-std::ostream& operator<<(std::ostream& os, const RigidMotion2D& tr) {
-    os << tr.tx << "," << tr.ty << "," << tr.angle;
-    return os;
-}
 
 struct TransformState {
     StabilizerParams params;
@@ -270,21 +285,52 @@ void obtainDTrajectory(cv::VideoCapture& cap, TransformState& transformState, in
     }
 }
 
+template<typename T>
+std::string join(std::string&&, T t_)
+{
+    std::stringstream ss;
+    ss << t_;
+    return ss.str();
+}
+
+template<typename T, typename ... Args>
+std::string join(std::string&& sep_, T t_, Args ... args_)
+{
+    std::stringstream ss;
+    ss << t_ << sep_ << join(std::forward<std::string>(sep_), args_...);
+    return ss.str();
+}
+
 void smoothDTrajectory(TransformState& transformState) {
-    Trajectory trajectory(transformState.d_trajectory.size());
-    Trajectory d_smooth_trajectory(transformState.d_trajectory.size());
+    size_t count = transformState.d_trajectory.size();
+    Trajectory trajectory(count), smooth_trajectory(count), d_smooth_trajectory(count);
     
     std::partial_sum(transformState.d_trajectory.begin(), transformState.d_trajectory.end(), trajectory.begin());
     
-    for (size_t i = 0; i < trajectory.size(); ++i) {
+    for (size_t i = 0; i < count; ++i) {
         size_t win_beg = std::max<int>(i - transformState.params.smooth_windowSize, 0);
         size_t win_end = std::min<int>(i + transformState.params.smooth_windowSize + 1, trajectory.size()); // exclusive
         
         RigidMotion2D acc = std::accumulate(trajectory.begin() + win_beg, trajectory.begin() + win_end, RigidMotion2D {});
         acc /= (win_end - win_beg);
+        smooth_trajectory[i] = acc;
+        
         acc -= trajectory[i];
-        transformState.d_trajectory[i] = acc;
+        d_smooth_trajectory[i] = acc;
     }
+    
+    {
+        std::ofstream ofs("trajectory.csv");
+        ofs << "index,trajectory_norm,trajectory_angle,smooth_norm,smooth_angle\n";
+        for (size_t i = 0; i < count; ++i) {
+            ofs << join(",", i, 
+                        trajectory[i].norm(), trajectory[i].angle,
+                        smooth_trajectory[i].norm(), smooth_trajectory[i].angle) << "\n";
+        }
+        ofs.close();
+    }
+    
+    transformState.d_trajectory = d_smooth_trajectory;
 }
 
 void stabilizeVideo(cv::VideoCapture& src, cv::VideoWriter& dst, TransformState& transformState, int numframes = -1) {
@@ -303,7 +349,7 @@ void stabilizeVideo(cv::VideoCapture& src, cv::VideoWriter& dst, TransformState&
             break;
         
         // LOG(INFO) << "Stabilizing frame idx: " << i;
-        cv::warpAffine(inputFrame, outputFrame, transformState.d_trajectory[i].get_rigid(), inputFrame.size());
+        cv::warpAffine(inputFrame, outputFrame, transformState.d_trajectory[i].rigid(), inputFrame.size());
         
         dst << outputFrame;
     }
@@ -311,9 +357,12 @@ void stabilizeVideo(cv::VideoCapture& src, cv::VideoWriter& dst, TransformState&
 
 int main(int argc, char **argv) {
     google::InitGoogleLogging(argv[0]); /* no gflags support */
-    auto config = parse_program_options(argc, argv);
+    bool args_parsed;
+    AppConfiguration config;
+    std::tie(args_parsed, config) = parse_program_options(argc, argv);
     
-    std::cout << config.input_path << config.output_path << config.codec << "\n";
+    if (!args_parsed)
+        return -1;
     
     auto src = cv::VideoCapture(config.input_path);
     
@@ -352,6 +401,7 @@ int main(int argc, char **argv) {
     });
     
     TransformState state;
+    state.params.smooth_windowSize = config.window_size;
     
     {
         auto elapsed =  measure<>::execution(obtainDTrajectory, src, state, -1);
@@ -378,3 +428,4 @@ int main(int argc, char **argv) {
     
     return 0;
 }
+

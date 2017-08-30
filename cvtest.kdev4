@@ -1,3 +1,4 @@
 [Project]
-Name=cvtest
+CreatedFrom=CMakeLists.txt
 Manager=KDevCMakeManager
+Name=cvtest
